@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 4),
+    "version": (0, 2, 5),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -15,7 +15,7 @@ import sys
 from tempfile import TemporaryDirectory
 
 import bpy
-from bpy.props import BoolProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
 from mathutils import Matrix, Vector
 
@@ -202,12 +202,13 @@ class Geometry:
 class Importer:
     def __init__(self, sdk, collection, directory, *, import_hierarchy, create_bounds,
                  auto_join, threshold, import_materials, import_textures, import_joined_mesh=False,
-                 import_full_hierarchy=False):
+                 import_full_hierarchy=False, axes_size=0.2):
         self.sdk = sdk
         self.collection = collection
         self.directory = Path(directory)
         self.import_hierarchy = import_hierarchy
         self.import_full_hierarchy = import_full_hierarchy
+        self.axes_size = axes_size
         self.import_joined_mesh = import_joined_mesh
         self.auto_join = auto_join
         self.import_materials = import_materials
@@ -456,6 +457,7 @@ class Importer:
             obj = self.create_object(name, mesh, parent, object_transform)
             if mesh is None:
                 obj.empty_display_type = "PLAIN_AXES"
+                obj.empty_display_size = self.axes_size
         if not join:
             for child_name, child_entities, matrix, material in children:
                 child_transform = residual @ matrix
@@ -581,7 +583,7 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         default=True,
     )
     import_full_hierarchy: BoolProperty(
-        name="Import Full Hierarchy",
+        name="Full Hierarchy",
         description="Preserve all nested parent-child relationships between components",
         default=False,
     )
@@ -612,6 +614,15 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         default=True,
     )
 
+    axes_size: FloatProperty(
+        name="Axes Size",
+        description="Set the display size of the plain axes on imported Empty objects",
+        default=0.2,
+        min=0.0001,
+        unit="LENGTH",
+        precision=3,
+    )
+
     def draw(self, context):
         self.layout.prop(self, "import_joined_mesh")
         options = self.layout.column()
@@ -629,6 +640,9 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         row = self.layout.row()
         row.enabled = self.import_materials
         row.prop(self, "import_textures")
+        row = self.layout.row()
+        row.enabled = self.import_hierarchy and not self.create_bounds and not self.import_joined_mesh
+        row.prop(self, "axes_size")
 
     def execute(self, context):
         try:
@@ -654,7 +668,7 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
                             create_bounds=self.create_bounds, auto_join=self.auto_join,
                             threshold=self.threshold, import_materials=self.import_materials,
                             import_textures=self.import_textures, import_joined_mesh=self.import_joined_mesh,
-                            import_full_hierarchy=self.import_full_hierarchy,
+                            import_full_hierarchy=self.import_full_hierarchy, axes_size=self.axes_size,
                         )
                         try:
                             importer.run(sdk.value("SUModelGetEntities", model), collection.name)
