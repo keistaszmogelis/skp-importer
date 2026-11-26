@@ -1,0 +1,15 @@
+name: Package SketchUp importer
+on: [push, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python -m py_compile skp_importer/__init__.py
+      - run: mkdir -p dist/skp_importer && cp skp_importer/__init__.py dist/skp_importer/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skp-importer-source
+          path: dist/
