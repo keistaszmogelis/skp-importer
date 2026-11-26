@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 17),
+    "version": (0, 2, 18),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -700,33 +700,33 @@ class Importer:
 class ImportProgress:
     def __init__(self, context):
         self.window = context.window
-        self.visible = not bpy.app.background and self.window is not None
+        self.workspace = context.workspace
+        self.visible = not bpy.app.background and self.window is not None and self.workspace is not None
         self.components = 0
         self.total = None
         self.finished = False
-        self.label = ""
         self.next_update = 0.0
         self.redraw = self.visible
         self.callback = self.draw
 
     def begin(self):
         if self.visible:
-            bpy.types.STATUSBAR_HT_header.append(self.callback)
+            bpy.types.STATUSBAR_HT_header.prepend(self.callback)
             self.show("Opening SketchUp file…")
 
     def draw(self, header, context):
-        if context.window != self.window:
+        if context.window != self.window or self.total is None:
             return
         row = header.layout.row(align=True)
-        if self.total is None:
-            row.label(text=self.label)
-            return
         factor = 1.0 if self.finished else min(self.components / max(self.total, 1), 0.99)
         row.ui_units_x = 12
         row.progress(factor=factor, type="BAR", text=f"SketchUp Import {factor:.0%}")
 
     def show(self, label):
-        self.label = label
+        if not self.visible:
+            return
+        # Setting workspace status also invalidates Blender's global status-bar area.
+        self.workspace.status_text_set(label if self.total is None else None)
         self.next_update = monotonic() + 0.25
         # The import runs synchronously, so refresh the window between batches.
         if self.redraw:
@@ -743,6 +743,7 @@ class ImportProgress:
     def end(self):
         if self.visible:
             bpy.types.STATUSBAR_HT_header.remove(self.callback)
+            self.workspace.status_text_set(None)
 
 
 class ImportSKP(bpy.types.Operator, ImportHelper):
