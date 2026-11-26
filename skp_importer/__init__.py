@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 9),
+    "version": (0, 2, 10),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -432,11 +432,13 @@ class Importer:
             self.collect(geometry, child_entities, transform @ child_matrix,
                          material or inherited, self.children(child_entities))
 
+    def has_geometry(self, entities):
+        return bool(self.sdk.value("SUEntitiesGetNumFaces", entities, C.c_size_t).value
+                    or self.sdk.entity_edge_count(entities))
+
     def count_mesh_parts(self, entities):
         if entities.ptr not in self.mesh_part_counts:
-            sdk = self.sdk
-            count = int(bool(sdk.value("SUEntitiesGetNumFaces", entities, C.c_size_t).value
-                             or sdk.entity_edge_count(entities)))
+            count = int(self.has_geometry(entities))
             for _, child_entities, _, _ in self.children(entities):
                 count += self.count_mesh_parts(child_entities)
                 if count >= self.threshold:
@@ -447,6 +449,10 @@ class Importer:
     def component(self, name, entities, transform, inherited, parent):
         start = len(self.objects)
         children = list(self.children(entities))
+        if len(children) == 1 and not self.has_geometry(entities):
+            child_name, child_entities, child_transform, material = children[0]
+            return self.component(child_name, child_entities, transform @ child_transform,
+                                  material or inherited, parent)
         location, rotation, scale = transform.decompose()
         object_transform = Matrix.LocRotScale(location, rotation, scale)
         residual = object_transform.inverted_safe() @ transform
