@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 7),
+    "version": (0, 2, 8),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -552,7 +552,7 @@ class Importer:
                 relative[obj] = relative_matrix(obj.parent) @ obj.matrix_parent_inverse @ obj.matrix_basis
             return relative[obj]
 
-        intermediate_empties = {obj for obj in objects if self.create_bounds and obj != root and obj.type == "EMPTY"}
+        intermediate_empties = {obj for obj in objects if obj != root and obj.type == "EMPTY"}
         changes = [(obj, relative_matrix(obj.parent) @ obj.matrix_parent_inverse)
                    for obj in objects if obj != root and obj.parent != root and obj not in intermediate_empties]
         for obj, parent_inverse in changes:
@@ -583,7 +583,7 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
     )
     import_hierarchy: BoolProperty(
         name="Hierarchy",
-        description="Parent nested components directly to their top-level assembly",
+        description="Parent mesh parts directly to the top-level assembly, omitting intermediate containers unless Full Hierarchy is enabled",
         default=True,
     )
     import_full_hierarchy: BoolProperty(
