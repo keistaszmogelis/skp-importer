@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 12),
+    "version": (0, 2, 13),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -684,7 +684,7 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         row.enabled = self.hierarchy_levels > 0
         row.prop(self, "create_bounds")
         row = options.row()
-        row.enabled = self.import_hierarchy and not self.create_bounds
+        row.enabled = self.hierarchy_levels > 0 and not self.create_bounds
         row.prop(self, "axes_size")
         self.layout.prop(self, "import_materials")
         row = self.layout.row()
