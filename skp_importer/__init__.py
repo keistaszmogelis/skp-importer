@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 22),
+    "version": (0, 2, 23),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -757,6 +757,7 @@ class ImportProgress:
         self.components = 0
         self.total = None
         self.cancelled = False
+        self.kept_partial_import = False
         self.next_update = 0.0
 
     def begin(self):
@@ -811,7 +812,7 @@ class ImportProgress:
 class CancelSKPImport(bpy.types.Operator):
     bl_idname = "import_scene.skp_cancel"
     bl_label = "Cancel SketchUp Import"
-    bl_description = "Cancel the import and remove partially imported objects"
+    bl_description = "Stop the import and keep objects already imported. Use Undo to remove them"
     bl_options = {"INTERNAL"}
 
     @classmethod
@@ -931,7 +932,11 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
 
     def modal(self, context, event):
         if self.progress.cancelled or (event.type == "ESC" and event.value == "PRESS"):
+            self.progress.cancelled = True
             self.cancel(context)
+            if self.progress.kept_partial_import:
+                self.report({"INFO"}, "SketchUp import stopped. Imported objects were kept.")
+                return {"FINISHED"}
             return {"CANCELLED"}
         if event.type != "TIMER":
             return {"PASS_THROUGH"}
@@ -988,9 +993,12 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
                     )
                     try:
                         yield from importer.run(sdk.value("SUModelGetEntities", model), collection.name)
-                    except BaseException:
-                        importer.rollback()
-                        bpy.data.collections.remove(collection)
+                    except BaseException as error:
+                        if isinstance(error, GeneratorExit) and progress.cancelled and importer.objects:
+                            progress.kept_partial_import = True
+                        else:
+                            importer.rollback()
+                            bpy.data.collections.remove(collection)
                         raise
             finally:
                 sdk.call("SUModelRelease", C.pointer(model))
