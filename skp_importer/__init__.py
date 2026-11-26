@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 0),
+    "version": (0, 2, 1),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -15,7 +15,7 @@ import sys
 from tempfile import TemporaryDirectory
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, IntProperty, StringProperty
 from bpy_extras.io_utils import ImportHelper
 from mathutils import Matrix, Vector
 
@@ -200,13 +200,17 @@ class Geometry:
 
 
 class Importer:
-    def __init__(self, sdk, collection, directory, mode, threshold, create_bounds=True):
+    def __init__(self, sdk, collection, directory, *, import_hierarchy, create_bounds,
+                 auto_join, threshold, import_materials, import_textures):
         self.sdk = sdk
         self.collection = collection
         self.directory = Path(directory)
-        self.mode = mode
+        self.import_hierarchy = import_hierarchy
+        self.auto_join = auto_join
+        self.import_materials = import_materials
+        self.import_textures = import_materials and import_textures
         self.threshold = threshold
-        self.create_bounds = create_bounds
+        self.create_bounds = import_hierarchy and create_bounds
         self.materials = {}
         self.texture_scales = {}
         self.objects = []
@@ -232,7 +236,7 @@ class Importer:
         material.diffuse_color = rgba
         shader.inputs["Base Color"].default_value = rgba
         shader.inputs["Alpha"].default_value = opacity
-        texture = sdk.value("SUMaterialGetTexture", ref, optional=True)
+        texture = sdk.value("SUMaterialGetTexture", ref, optional=True) if self.import_textures else None
         if texture:
             width, height = C.c_size_t(), C.c_size_t()
             u_scale, v_scale = C.c_double(), C.c_double()
@@ -261,7 +265,7 @@ class Importer:
         front = sdk.value("SUFaceGetFrontMaterial", face, optional=True)
         back = sdk.value("SUFaceGetBackMaterial", face, optional=True)
         chosen = front or back or inherited
-        material = self.material(chosen)
+        material = self.material(chosen) if self.import_materials else None
         texture_scale = self.texture_scales.get(chosen.ptr) if chosen is not None else None
         reverse = front is None and back is not None
         helper = Ref()
@@ -372,6 +376,8 @@ class Importer:
                    self.instance_material("SUComponentInstanceToDrawingElement", instance))
 
     def instance_material(self, conversion, instance):
+        if not self.import_materials:
+            return None
         function = getattr(self.sdk.dll, conversion)
         function.argtypes = [Ref]
         function.restype = Ref
@@ -392,6 +398,8 @@ class Importer:
             layer.uv.foreach_set("vector", [v for _, pair in geometry.corners for v in pair])
         for polygon, (material, smooth) in zip(mesh.polygons, geometry.materials):
             polygon.use_smooth = smooth
+            if not self.import_materials:
+                continue
             if material not in slots:
                 slots[material] = len(mesh.materials)
                 mesh.materials.append(material)
@@ -426,24 +434,29 @@ class Importer:
                for column, value in enumerate(values)):
             residual = IDENTITY
 
-        join = self.mode == "AUTO" and len(children) >= self.threshold
+        join = self.auto_join and len(children) >= self.threshold
         key = (entities.ptr, inherited.ptr if inherited else None, join,
                tuple(tuple(row) for row in residual))
-        mesh = self.component_meshes.get(key)
-        if mesh is None:
+        if key not in self.component_meshes:
             geometry = Geometry()
             if join:
                 self.collect(geometry, entities, residual, inherited, children)
             else:
                 self.append_entities(geometry, entities, residual, inherited)
-            mesh = self.mesh_from_geometry(name, geometry)
-            self.component_meshes[key] = mesh
-        obj = self.create_object(name, mesh, parent, object_transform)
+            self.component_meshes[key] = (
+                self.mesh_from_geometry(name, geometry) if geometry.faces or geometry.edges else None
+            )
+        mesh = self.component_meshes[key]
+        obj = None
+        if mesh is not None or self.import_hierarchy:
+            obj = self.create_object(name, mesh, parent, object_transform)
+            if mesh is None:
+                obj.empty_display_type = "PLAIN_AXES"
         if not join:
             for child_name, child_entities, matrix, material in children:
                 child_transform = residual @ matrix
                 child_parent = obj
-                if self.mode == "NO_JOIN":
+                if not self.import_hierarchy:
                     child_transform = object_transform @ child_transform
                     child_parent = None
                 self.component(child_name, child_entities, child_transform,
@@ -459,6 +472,8 @@ class Importer:
             if obj.parent is not None:
                 matrix = world_matrices[obj.parent] @ matrix
             world_matrices[obj] = matrix
+            if obj.data is None:
+                continue
             for vertex in obj.data.vertices:
                 point = matrix @ vertex.co
                 for axis in range(3):
@@ -493,7 +508,7 @@ class Importer:
         for name, child_entities, matrix, material in self.children(entities):
             start = len(self.objects)
             self.component(name, child_entities, matrix, material, None)
-            if self.create_bounds and self.mode != "NO_JOIN" and len(self.objects) > start + 1:
+            if self.create_bounds and len(self.objects) > start + 1:
                 self.add_assembly_bounds(self.objects[start:])
 
     def rollback(self):
@@ -510,23 +525,25 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
 
     filename_ext = ".skp"
     filter_glob: StringProperty(default="*.skp", options={"HIDDEN"})
-    nesting: EnumProperty(
-        name="Nested Components",
-        items=[
-            ("HIERARCHY", "Hierarchy", "Create separate child mesh objects"),
-            ("AUTO", "Auto Join", "Join a component's subtree when its direct child count reaches the threshold"),
-            ("NO_JOIN", "No Join", "Keep every instance as a separate object without parenting"),
-        ],
-        default="AUTO",
-    )
+    import_hierarchy: BoolProperty(name="Import Hierarchy", default=True)
     create_bounds: BoolProperty(name="Create Bounding Boxes", default=True)
-    threshold: IntProperty(name="Join Threshold", default=10, min=1)
+    auto_join: BoolProperty(name="Auto Join", default=True)
+    threshold: IntProperty(name="Join Threshold", default=5, min=1)
+    import_materials: BoolProperty(name="Import Materials", default=True)
+    import_textures: BoolProperty(name="Import Textures", default=True)
 
     def draw(self, context):
-        self.layout.row(align=True).prop(self, "nesting", expand=True)
-        self.layout.prop(self, "create_bounds")
-        if self.nesting == "AUTO":
+        self.layout.prop(self, "import_hierarchy")
+        row = self.layout.row()
+        row.enabled = self.import_hierarchy
+        row.prop(self, "create_bounds")
+        self.layout.prop(self, "auto_join")
+        if self.auto_join:
             self.layout.prop(self, "threshold")
+        self.layout.prop(self, "import_materials")
+        row = self.layout.row()
+        row.enabled = self.import_materials
+        row.prop(self, "import_textures")
 
     def execute(self, context):
         try:
@@ -547,7 +564,12 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
                     collection = bpy.data.collections.new(Path(self.filepath).stem)
                     context.collection.children.link(collection)
                     with TemporaryDirectory(prefix="blender-skp-") as directory:
-                        importer = Importer(sdk, collection, directory, self.nesting, self.threshold, self.create_bounds)
+                        importer = Importer(
+                            sdk, collection, directory, import_hierarchy=self.import_hierarchy,
+                            create_bounds=self.create_bounds, auto_join=self.auto_join,
+                            threshold=self.threshold, import_materials=self.import_materials,
+                            import_textures=self.import_textures,
+                        )
                         try:
                             importer.run(sdk.value("SUModelGetEntities", model))
                         except Exception:

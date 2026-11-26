@@ -2,7 +2,7 @@
 
 For Blender 4.2+ on Windows x64 and macOS with a matching SketchUp Desktop SDK architecture. Install the runtime-ready ZIP in Blender using **Preferences → Add-ons → Install from Disk**, then choose **File → Import → SketchUp (.skp)**.
 
-Auto Join is the default and joins a subtree at 10 immediate children. Hierarchy retains parenting and No Join creates separate, unparented objects. Create Bounding Boxes is enabled by default and adds selectable edge-only boxes to top-level hierarchies with children.
+Import Hierarchy and Auto Join are enabled by default. Auto Join joins a subtree at five immediate children. Disable both options to import separate, unparented objects. Geometry-free hierarchy parents are Blender Empty objects. Create Bounding Boxes adds selectable edge-only boxes when hierarchy is enabled. Import Materials and Import Textures are enabled by default. Textures require materials.
 
 ## Package your own runtime ZIP
 
