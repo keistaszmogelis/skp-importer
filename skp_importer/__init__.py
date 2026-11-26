@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 13),
+    "version": (0, 2, 14),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+from time import monotonic
 
 import bpy
 from bpy.props import BoolProperty, FloatProperty, IntProperty, StringProperty
@@ -205,13 +206,14 @@ class Geometry:
 class Importer:
     def __init__(self, sdk, collection, directory, *, create_bounds,
                  auto_join, threshold, import_materials, import_textures, import_joined_mesh=False,
-                 hierarchy_levels=1, axes_size=0.2):
+                 hierarchy_levels=1, axes_size=0.2, progress=None):
         self.sdk = sdk
         self.collection = collection
         self.directory = Path(directory)
         self.import_hierarchy = hierarchy_levels > 0
         self.hierarchy_levels = hierarchy_levels
         self.axes_size = axes_size
+        self.progress = progress
         self.import_joined_mesh = import_joined_mesh
         self.auto_join = auto_join
         self.import_materials = import_materials
@@ -431,6 +433,8 @@ class Importer:
         for _, child_entities, child_matrix, material in children:
             self.collect(geometry, child_entities, transform @ child_matrix,
                          material or inherited, self.children(child_entities))
+            if self.progress:
+                self.progress.component_done()
 
     def has_geometry(self, entities):
         return bool(self.sdk.value("SUEntitiesGetNumFaces", entities, C.c_size_t).value
@@ -451,8 +455,11 @@ class Importer:
         children = list(self.children(entities))
         if len(children) == 1 and not self.has_geometry(entities):
             child_name, child_entities, child_transform, material = children[0]
-            return self.component(child_name, child_entities, transform @ child_transform,
-                                  material or inherited, parent, depth)
+            obj = self.component(child_name, child_entities, transform @ child_transform,
+                                 material or inherited, parent, depth)
+            if self.progress:
+                self.progress.component_done()
+            return obj
         location, rotation, scale = transform.decompose()
         object_transform = Matrix.LocRotScale(location, rotation, scale)
         residual = object_transform.inverted_safe() @ transform
@@ -504,6 +511,8 @@ class Importer:
             or (parent is None and len(self.objects) > start + 1)
         ):
             obj = self.add_assembly_bounds(obj, self.objects[start:])
+        if self.progress:
+            self.progress.component_done()
         return obj
 
     def add_assembly_bounds(self, root, objects):
@@ -617,6 +626,48 @@ class Importer:
                 datablocks.remove(item, do_unlink=True)
 
 
+class ImportProgress:
+    def __init__(self, context):
+        self.workspace = context.workspace
+        self.window_manager = context.window_manager
+        self.visible = not bpy.app.background and context.window is not None and self.workspace is not None
+        self.components = 0
+        self.next_update = 0.0
+        self.redraw = self.visible
+
+    def begin(self):
+        if self.visible:
+            self.window_manager.progress_begin(0, 3)
+            self.stage(0, "Opening SketchUp file…")
+
+    def stage(self, step, label):
+        if self.visible:
+            self.window_manager.progress_update(step)
+            self.show(label)
+
+    def show(self, label):
+        self.workspace.status_text_set(label)
+        self.next_update = monotonic() + 0.25
+        # The import runs synchronously, so refresh the window between batches.
+        if self.redraw:
+            try:
+                bpy.ops.wm.redraw_timer(type="DRAW_WIN_SWAP", iterations=1)
+            except RuntimeError:
+                self.redraw = False
+
+    def component_done(self):
+        self.components += 1
+        if self.visible and monotonic() >= self.next_update:
+            self.show(f"Importing SketchUp geometry and materials… {self.components:,} components processed")
+
+    def end(self):
+        if self.visible:
+            try:
+                self.workspace.status_text_set(None)
+            finally:
+                self.window_manager.progress_end()
+
+
 class ImportSKP(bpy.types.Operator, ImportHelper):
     bl_idname = "import_scene.skp"
     bl_label = "Import SketchUp"
@@ -692,7 +743,9 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         row.prop(self, "import_textures")
 
     def execute(self, context):
+        progress = ImportProgress(context)
         try:
+            progress.begin()
             addon_dir = Path(__file__).resolve().parent
             if sys.platform == "darwin":
                 bundled = addon_dir / "SketchUpAPI.framework" / "Versions" / "A" / "SketchUpAPI"
@@ -705,6 +758,7 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
                 sdk.call("SUModelCreateFromFileWithStatus", C.pointer(model),
                          C.c_char_p(self.filepath.encode("utf-8")), C.pointer(status))
                 try:
+                    progress.stage(1, "Importing SketchUp geometry and materials…")
                     if status.value:
                         self.report({"WARNING"}, "This file is newer than the installed SketchUp SDK. Some data may be missing.")
                     collection = bpy.data.collections.new(Path(self.filepath).stem)
@@ -716,9 +770,11 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
                             threshold=self.threshold, import_materials=self.import_materials,
                             import_textures=self.import_textures, import_joined_mesh=self.import_joined_mesh,
                             hierarchy_levels=self.hierarchy_levels, axes_size=self.axes_size,
+                            progress=progress,
                         )
                         try:
                             importer.run(sdk.value("SUModelGetEntities", model), collection.name)
+                            progress.stage(2, f"Finishing SketchUp import… {progress.components:,} components processed")
                         except Exception:
                             importer.rollback()
                             bpy.data.collections.remove(collection)
@@ -730,6 +786,8 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         except (RuntimeError, OSError, AttributeError, ValueError) as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
+        finally:
+            progress.end()
         return {"FINISHED"}
 
 
