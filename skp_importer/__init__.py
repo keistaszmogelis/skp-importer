@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 20),
+    "version": (0, 2, 21),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -194,48 +194,90 @@ def polygon_boundary(edges):
     return None
 
 
-def glass_shaders(material, rgba):
-    nodes = material.node_tree.nodes
-    links = material.node_tree.links
-    eevee = nodes.get("Principled BSDF")
-    cycles = nodes.new("ShaderNodeBsdfPrincipled")
-    eevee.label = "Eevee Glass"
-    cycles.label = "Cycles Glass"
-    eevee.location = (0, 400)
-    cycles.location = (0, 0)
-    for shader in (eevee, cycles):
-        shader.inputs["Base Color"].default_value = (*rgba[:3], 1.0)
-        shader.inputs["Transmission Weight"].default_value = 1.0
-        shader.inputs["Roughness"].default_value = 0.0
-    eevee.inputs["Alpha"].default_value = rgba[3]
-    cycles.inputs["Alpha"].default_value = 1.0
+def make_glass_group():
+    group = bpy.data.node_groups.new("Paulius GLASS", "ShaderNodeTree")
+    nodes, links = group.nodes, group.links
+    shader = nodes.new("ShaderNodeBsdfPrincipled")
+    shader.location = (0, 300)
+    shader.inputs["Alpha"].default_value = 1.0
+    shader.inputs["Transmission Weight"].default_value = 1.0
+
+    controls = (
+        ("Base Color", "NodeSocketColor", (1.0, 1.0, 1.0, 1.0), "Base Color", None),
+        ("Roughness", "NodeSocketFloat", 0.0, "Roughness", (0.0, 1.0)),
+        ("IOR", "NodeSocketFloat", 1.5, "IOR", (1.0, 100.0)),
+        ("EEVEE Alpha", "NodeSocketFloat", 1.0, None, (0.0, 1.0)),
+        ("Thin Wall", "NodeSocketBool", False, "Thin Wall", None),
+        ("Dispersion Scale", "NodeSocketFloat", 0.0, "Transmission Dispersion Scale", (0.0, 1.0)),
+        ("Dispersion Abbe Number", "NodeSocketFloat", 20.0, "Transmission Dispersion Abbe Number", (9.0, 91.0)),
+        ("Shadow", "NodeSocketBool", False, None, None),
+    )
+    for name, socket_type, default, shader_input, limits in controls:
+        socket = group.interface.new_socket(name=name, in_out="INPUT", socket_type=socket_type)
+        socket.default_value = default
+        if limits is not None:
+            socket.min_value, socket.max_value = limits
+        if shader_input and shader.inputs.get(shader_input) is None:
+            socket.description = "Requires a Blender version with this Principled BSDF input"
+    for name in ("Eevee", "Cycles"):
+        group.interface.new_socket(name=name, in_out="OUTPUT", socket_type="NodeSocketShader")
+
+    inputs = nodes.new("NodeGroupInput")
+    inputs.location = (-660, 300)
+    outputs = nodes.new("NodeGroupOutput")
+    outputs.location = (740, 300)
+    for name, _, _, shader_input, _ in controls:
+        if shader_input and shader.inputs.get(shader_input) is not None:
+            links.new(inputs.outputs[name], shader.inputs[shader_input])
+
+    transparent = nodes.new("ShaderNodeBsdfTransparent")
+    transparent.location = (250, 20)
+    light_path = nodes.new("ShaderNodeLightPath")
+    light_path.location = (-660, -60)
+    visible_ray = nodes.new("ShaderNodeMath")
+    visible_ray.operation = "MAXIMUM"
+    visible_ray.label = "Camera or Transmission"
+    visible_ray.location = (-410, -60)
+    links.new(light_path.outputs["Is Camera Ray"], visible_ray.inputs[0])
+    links.new(light_path.outputs["Is Transmission Ray"], visible_ray.inputs[1])
+
+    cycles_factor = nodes.new("ShaderNodeMath")
+    cycles_factor.operation = "MAXIMUM"
+    cycles_factor.label = "Visible Ray or Shadow Enabled"
+    cycles_factor.location = (-190, -60)
+    links.new(visible_ray.outputs[0], cycles_factor.inputs[0])
+    links.new(inputs.outputs["Shadow"], cycles_factor.inputs[1])
+
+    for name, factor, y in (("Eevee", inputs.outputs["EEVEE Alpha"], 300),
+                            ("Cycles", cycles_factor.outputs[0], 20)):
+        mix = nodes.new("ShaderNodeMixShader")
+        mix.label = name
+        mix.location = (480, y)
+        links.new(factor, mix.inputs[0])
+        links.new(transparent.outputs[0], mix.inputs[1])
+        links.new(shader.outputs[0], mix.inputs[2])
+        links.new(mix.outputs[0], outputs.inputs[name])
+    return group
+
+
+def glass_shader(material, group, rgba):
+    nodes, links = material.node_tree.nodes, material.node_tree.links
+    nodes.remove(nodes.get("Principled BSDF"))
+    shader = nodes.new("ShaderNodeGroup")
+    shader.node_tree = group
+    shader.width = 240
+    shader.inputs["Base Color"].default_value = (*rgba[:3], 1.0)
+    shader.inputs["EEVEE Alpha"].default_value = rgba[3]
 
     eevee_output = nodes.get("Material Output")
-    eevee_output.target = "EEVEE"
-    eevee_output.location = (660, 400)
     cycles_output = nodes.new("ShaderNodeOutputMaterial")
-    cycles_output.target = "CYCLES"
-    cycles_output.location = (660, 0)
-    eevee_output.is_active_output = True
-    cycles_output.is_active_output = True
-
-    light_path = nodes.new("ShaderNodeLightPath")
-    light_path.location = (-320, -120)
-    either_ray = nodes.new("ShaderNodeMath")
-    either_ray.operation = "MAXIMUM"
-    either_ray.label = "Camera or Transmission"
-    either_ray.location = (0, -670)
-    transparent = nodes.new("ShaderNodeBsdfTransparent")
-    transparent.location = (260, -300)
-    mix = nodes.new("ShaderNodeMixShader")
-    mix.location = (460, 0)
-    links.new(light_path.outputs["Is Camera Ray"], either_ray.inputs[0])
-    links.new(light_path.outputs["Is Transmission Ray"], either_ray.inputs[1])
-    links.new(either_ray.outputs[0], mix.inputs[0])
-    links.new(transparent.outputs[0], mix.inputs[1])
-    links.new(cycles.outputs[0], mix.inputs[2])
-    links.new(mix.outputs[0], cycles_output.inputs["Surface"])
-    return eevee, cycles
+    for output, engine, socket, y in ((eevee_output, "EEVEE", "Eevee", 240),
+                                      (cycles_output, "CYCLES", "Cycles", 0)):
+        output.target = engine
+        output.is_active_output = True
+        output.location = (320, y)
+        links.new(shader.outputs[socket], output.inputs["Surface"])
+    return shader
 
 
 class Geometry:
@@ -275,6 +317,7 @@ class Importer:
         self.component_counts = {}
         self.images = []
         self.new_materials = []
+        self.glass_group = None
 
     def material(self, ref):
         if ref is None:
@@ -294,9 +337,10 @@ class Importer:
         material.diffuse_color = rgba
         shader.inputs["Base Color"].default_value = rgba
         shader.inputs["Alpha"].default_value = opacity
-        shaders = (shader,)
         if re.search(r"\bglass\b", name.replace("_", " "), re.IGNORECASE):
-            shaders = glass_shaders(material, rgba)
+            if self.glass_group is None:
+                self.glass_group = make_glass_group()
+            shader = glass_shader(material, self.glass_group, rgba)
         texture = sdk.value("SUMaterialGetTexture", ref, optional=True) if self.import_textures else None
         if texture:
             width, height = C.c_size_t(), C.c_size_t()
@@ -317,8 +361,7 @@ class Importer:
             node = nodes.new("ShaderNodeTexImage")
             node.image = image
             node.location = (-320, 300)
-            for shader in shaders:
-                material.node_tree.links.new(node.outputs["Color"], shader.inputs["Base Color"])
+            material.node_tree.links.new(node.outputs["Color"], shader.inputs["Base Color"])
         self.materials[ref.ptr] = material
         return material
 
@@ -699,6 +742,8 @@ class Importer:
                                   (bpy.data.materials, self.new_materials), (bpy.data.images, self.images)):
             for item in items:
                 datablocks.remove(item, do_unlink=True)
+        if self.glass_group is not None and self.glass_group.users == 0:
+            bpy.data.node_groups.remove(self.glass_group)
 
 
 class ImportProgress:
