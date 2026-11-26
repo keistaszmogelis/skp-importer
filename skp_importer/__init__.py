@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 5),
+    "version": (0, 2, 6),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -573,12 +573,12 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
     filename_ext = ".skp"
     filter_glob: StringProperty(default="*.skp", options={"HIDDEN"})
     import_joined_mesh: BoolProperty(
-        name="Import Joined Mesh",
+        name="Single Mesh",
         description="Combine the entire SketchUp model into one mesh object",
         default=False,
     )
     import_hierarchy: BoolProperty(
-        name="Import Hierarchy",
+        name="Hierarchy",
         description="Parent nested components directly to their top-level assembly",
         default=True,
     )
@@ -589,7 +589,7 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
     )
     create_bounds: BoolProperty(
         name="Create Bounding Boxes",
-        description="Create selectable bounding boxes for top-level assemblies with children",
+        description="Create selectable bounding boxes for assemblies and geometry-free components",
         default=True,
     )
     auto_join: BoolProperty(
@@ -604,18 +604,18 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         min=1,
     )
     import_materials: BoolProperty(
-        name="Import Materials",
+        name="Materials",
         description="Create and assign materials from the SketchUp model",
         default=True,
     )
     import_textures: BoolProperty(
-        name="Import Textures",
+        name="Textures",
         description="Import image textures and pack them into the Blender file",
         default=True,
     )
 
     axes_size: FloatProperty(
-        name="Axes Size",
+        name="Empty Axe Size",
         description="Set the display size of the plain axes on imported Empty objects",
         default=0.2,
         min=0.0001,
@@ -631,18 +631,20 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         row = options.row()
         row.enabled = self.import_hierarchy
         row.prop(self, "import_full_hierarchy")
-        row.prop(self, "create_bounds")
         options.prop(self, "auto_join")
         row = options.row()
         row.enabled = self.auto_join
         row.prop(self, "threshold")
+        row = options.row()
+        row.enabled = self.import_hierarchy
+        row.prop(self, "create_bounds")
+        row = options.row()
+        row.enabled = self.import_hierarchy and not self.create_bounds
+        row.prop(self, "axes_size")
         self.layout.prop(self, "import_materials")
         row = self.layout.row()
         row.enabled = self.import_materials
         row.prop(self, "import_textures")
-        row = self.layout.row()
-        row.enabled = self.import_hierarchy and not self.create_bounds and not self.import_joined_mesh
-        row.prop(self, "axes_size")
 
     def execute(self, context):
         try:
