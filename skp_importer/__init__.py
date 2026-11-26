@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 14),
+    "version": (0, 2, 15),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -215,7 +215,7 @@ class Importer:
         self.axes_size = axes_size
         self.progress = progress
         self.import_joined_mesh = import_joined_mesh
-        self.auto_join = auto_join
+        self.auto_join = self.import_hierarchy and auto_join
         self.import_materials = import_materials
         self.import_textures = import_materials and import_textures
         self.threshold = threshold
@@ -727,9 +727,11 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         options = self.layout.column()
         options.enabled = not self.import_joined_mesh
         options.prop(self, "hierarchy_levels")
-        options.prop(self, "auto_join")
         row = options.row()
-        row.enabled = self.auto_join
+        row.enabled = self.hierarchy_levels > 0
+        row.prop(self, "auto_join")
+        row = options.row()
+        row.enabled = self.hierarchy_levels > 0 and self.auto_join
         row.prop(self, "threshold")
         row = options.row()
         row.enabled = self.hierarchy_levels > 0
