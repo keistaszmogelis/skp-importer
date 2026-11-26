@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 10),
+    "version": (0, 2, 11),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -205,12 +205,12 @@ class Geometry:
 class Importer:
     def __init__(self, sdk, collection, directory, *, import_hierarchy, create_bounds,
                  auto_join, threshold, import_materials, import_textures, import_joined_mesh=False,
-                 import_full_hierarchy=False, axes_size=0.2):
+                 hierarchy_levels=1, axes_size=0.2):
         self.sdk = sdk
         self.collection = collection
         self.directory = Path(directory)
         self.import_hierarchy = import_hierarchy
-        self.import_full_hierarchy = import_full_hierarchy
+        self.hierarchy_levels = hierarchy_levels
         self.axes_size = axes_size
         self.import_joined_mesh = import_joined_mesh
         self.auto_join = auto_join
@@ -446,13 +446,13 @@ class Importer:
             self.mesh_part_counts[entities.ptr] = count
         return self.mesh_part_counts[entities.ptr]
 
-    def component(self, name, entities, transform, inherited, parent):
+    def component(self, name, entities, transform, inherited, parent, depth=0):
         start = len(self.objects)
         children = list(self.children(entities))
         if len(children) == 1 and not self.has_geometry(entities):
             child_name, child_entities, child_transform, material = children[0]
             return self.component(child_name, child_entities, transform @ child_transform,
-                                  material or inherited, parent)
+                                  material or inherited, parent, depth)
         location, rotation, scale = transform.decompose()
         object_transform = Matrix.LocRotScale(location, rotation, scale)
         residual = object_transform.inverted_safe() @ transform
@@ -463,7 +463,7 @@ class Importer:
 
         join = False
         if self.auto_join:
-            if self.import_hierarchy and not self.import_full_hierarchy:
+            if self.import_hierarchy and depth >= self.hierarchy_levels - 1:
                 count = 0
                 for _, child_entities, _, _ in children:
                     count += self.count_mesh_parts(child_entities)
@@ -498,9 +498,9 @@ class Importer:
                     child_transform = object_transform @ child_transform
                     child_parent = None
                 self.component(child_name, child_entities, child_transform,
-                               material or inherited, child_parent)
+                               material or inherited, child_parent, depth + 1)
         if self.create_bounds and obj is not None and (
-            (obj.type == "EMPTY" and (parent is None or self.import_full_hierarchy))
+            (obj.type == "EMPTY" and depth < self.hierarchy_levels)
             or (parent is None and len(self.objects) > start + 1)
         ):
             obj = self.add_assembly_bounds(obj, self.objects[start:])
@@ -572,7 +572,7 @@ class Importer:
         for name, child_entities, matrix, material in self.children(entities):
             start = len(self.objects)
             root = self.component(name, child_entities, matrix, material, None)
-            if self.import_hierarchy and not self.import_full_hierarchy:
+            if self.import_hierarchy:
                 self.flatten_assembly(root, self.objects[start:])
 
     def flatten_assembly(self, root, objects):
@@ -584,11 +584,27 @@ class Importer:
                 relative[obj] = relative_matrix(obj.parent) @ obj.matrix_parent_inverse @ obj.matrix_basis
             return relative[obj]
 
-        intermediate_empties = {obj for obj in objects if obj != root and obj.type == "EMPTY"}
-        changes = [(obj, relative_matrix(obj.parent) @ obj.matrix_parent_inverse)
-                   for obj in objects if obj != root and obj.parent != root and obj not in intermediate_empties]
-        for obj, parent_inverse in changes:
-            obj.parent = root
+        depths = {root: 0}
+
+        def object_depth(obj):
+            if obj not in depths:
+                depths[obj] = object_depth(obj.parent) + 1
+            return depths[obj]
+
+        intermediate_empties = {
+            obj for obj in objects if obj.type == "EMPTY" and object_depth(obj) >= self.hierarchy_levels
+        }
+        changes = []
+        for obj in objects:
+            if obj in intermediate_empties or object_depth(obj) <= self.hierarchy_levels:
+                continue
+            parent = obj.parent
+            while object_depth(parent) >= self.hierarchy_levels:
+                parent = parent.parent
+            parent_inverse = relative_matrix(parent).inverted_safe() @ relative_matrix(obj.parent)
+            changes.append((obj, parent, parent_inverse @ obj.matrix_parent_inverse))
+        for obj, parent, parent_inverse in changes:
+            obj.parent = parent
             obj.matrix_parent_inverse = parent_inverse
         for obj in intermediate_empties:
             self.objects.remove(obj)
@@ -615,13 +631,14 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
     )
     import_hierarchy: BoolProperty(
         name="Hierarchy",
-        description="Parent mesh parts directly to the top-level assembly, omitting intermediate containers unless Full Hierarchy is enabled",
+        description="Parent mesh parts under their top-level assembly up to the selected depth",
         default=True,
     )
-    import_full_hierarchy: BoolProperty(
-        name="Full Hierarchy",
-        description="Preserve all nested parent-child relationships between components",
-        default=False,
+    hierarchy_levels: IntProperty(
+        name="Hierarchy Levels",
+        description="Maximum nesting depth below the top-level object. A value of 1 makes all parts direct children",
+        default=1,
+        min=1,
     )
     create_bounds: BoolProperty(
         name="Create Bounding Boxes",
@@ -666,7 +683,7 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         options.prop(self, "import_hierarchy")
         row = options.row()
         row.enabled = self.import_hierarchy
-        row.prop(self, "import_full_hierarchy")
+        row.prop(self, "hierarchy_levels")
         options.prop(self, "auto_join")
         row = options.row()
         row.enabled = self.auto_join
@@ -706,7 +723,7 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
                             create_bounds=self.create_bounds, auto_join=self.auto_join,
                             threshold=self.threshold, import_materials=self.import_materials,
                             import_textures=self.import_textures, import_joined_mesh=self.import_joined_mesh,
-                            import_full_hierarchy=self.import_full_hierarchy, axes_size=self.axes_size,
+                            hierarchy_levels=self.hierarchy_levels, axes_size=self.axes_size,
                         )
                         try:
                             importer.run(sdk.value("SUModelGetEntities", model), collection.name)
