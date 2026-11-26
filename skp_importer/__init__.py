@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 3),
+    "version": (0, 2, 4),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -201,11 +201,13 @@ class Geometry:
 
 class Importer:
     def __init__(self, sdk, collection, directory, *, import_hierarchy, create_bounds,
-                 auto_join, threshold, import_materials, import_textures, import_joined_mesh=False):
+                 auto_join, threshold, import_materials, import_textures, import_joined_mesh=False,
+                 import_full_hierarchy=False):
         self.sdk = sdk
         self.collection = collection
         self.directory = Path(directory)
         self.import_hierarchy = import_hierarchy
+        self.import_full_hierarchy = import_full_hierarchy
         self.import_joined_mesh = import_joined_mesh
         self.auto_join = auto_join
         self.import_materials = import_materials
@@ -426,6 +428,7 @@ class Importer:
                          material or inherited, self.children(child_entities))
 
     def component(self, name, entities, transform, inherited, parent):
+        start = len(self.objects)
         children = list(self.children(entities))
         location, rotation, scale = transform.decompose()
         object_transform = Matrix.LocRotScale(location, rotation, scale)
@@ -462,17 +465,26 @@ class Importer:
                     child_parent = None
                 self.component(child_name, child_entities, child_transform,
                                material or inherited, child_parent)
+        if self.create_bounds and obj is not None and (
+            obj.type == "EMPTY" or (parent is None and len(self.objects) > start + 1)
+        ):
+            obj = self.add_assembly_bounds(obj, self.objects[start:])
+        return obj
 
-    def add_assembly_bounds(self, objects):
-        root = objects[0]
+    def add_assembly_bounds(self, root, objects):
         world_matrices = {}
         low = Vector((float("inf"),) * 3)
         high = Vector((float("-inf"),) * 3)
+        def assembly_matrix(obj):
+            if obj not in world_matrices:
+                matrix = obj.matrix_parent_inverse @ obj.matrix_basis
+                if obj != root:
+                    matrix = assembly_matrix(obj.parent) @ matrix
+                world_matrices[obj] = matrix
+            return world_matrices[obj]
+
         for obj in objects:
-            matrix = obj.matrix_basis.copy()
-            if obj.parent is not None:
-                matrix = world_matrices[obj.parent] @ matrix
-            world_matrices[obj] = matrix
+            matrix = assembly_matrix(obj)
             if obj.data is None:
                 continue
             for vertex in obj.data.vertices:
@@ -481,7 +493,7 @@ class Importer:
                     low[axis] = min(low[axis], point[axis])
                     high[axis] = max(high[axis], point[axis])
         if low.x == float("inf"):
-            low = high = root.matrix_basis.translation
+            low = high = assembly_matrix(root).translation
 
         center = (low + high) * 0.5
         half_size = [max(extent * 0.505, 0.0005) for extent in high - low]
@@ -496,19 +508,20 @@ class Importer:
         }
         name = f"{root.name} Bounds"
         mesh = self.mesh_from_geometry(name, geometry)
-        box = self.create_object(name, mesh, None, Matrix.Translation(center))
+        box = self.create_object(name, mesh, root.parent, Matrix.Translation(center))
         box_inverse = Matrix.Translation(-center)
         if root.type == "EMPTY":
             for child in objects[1:]:
                 if child.parent == root:
-                    parent_inverse = box_inverse @ root.matrix_basis @ child.matrix_parent_inverse
+                    parent_inverse = box_inverse @ assembly_matrix(root) @ child.matrix_parent_inverse
                     child.parent = box
                     child.matrix_parent_inverse = parent_inverse
             self.objects.remove(root)
             bpy.data.objects.remove(root, do_unlink=True)
         else:
             root.parent = box
-            root.matrix_parent_inverse = box_inverse
+            root.matrix_parent_inverse = box_inverse @ root.matrix_parent_inverse
+        return box
 
     def run(self, entities, model_name="Model Geometry"):
         geometry = Geometry()
@@ -523,9 +536,25 @@ class Importer:
             self.create_object("Model Geometry", mesh, None, IDENTITY)
         for name, child_entities, matrix, material in self.children(entities):
             start = len(self.objects)
-            self.component(name, child_entities, matrix, material, None)
-            if self.create_bounds and len(self.objects) > start + 1:
-                self.add_assembly_bounds(self.objects[start:])
+            root = self.component(name, child_entities, matrix, material, None)
+            if self.import_hierarchy and not self.import_full_hierarchy:
+                self.flatten_assembly(root, self.objects[start:])
+
+    @staticmethod
+    def flatten_assembly(root, objects):
+        # Capture transforms before changing any parent links.
+        relative = {root: IDENTITY}
+
+        def relative_matrix(obj):
+            if obj not in relative:
+                relative[obj] = relative_matrix(obj.parent) @ obj.matrix_parent_inverse @ obj.matrix_basis
+            return relative[obj]
+
+        changes = [(obj, relative_matrix(obj.parent) @ obj.matrix_parent_inverse)
+                   for obj in objects if obj != root and obj.parent != root]
+        for obj, parent_inverse in changes:
+            obj.parent = root
+            obj.matrix_parent_inverse = parent_inverse
 
     def rollback(self):
         for datablocks, items in ((bpy.data.objects, self.objects), (bpy.data.meshes, self.meshes),
@@ -548,8 +577,13 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
     )
     import_hierarchy: BoolProperty(
         name="Import Hierarchy",
-        description="Preserve parent-child relationships between components",
+        description="Parent nested components directly to their top-level assembly",
         default=True,
+    )
+    import_full_hierarchy: BoolProperty(
+        name="Import Full Hierarchy",
+        description="Preserve all nested parent-child relationships between components",
+        default=False,
     )
     create_bounds: BoolProperty(
         name="Create Bounding Boxes",
@@ -585,6 +619,7 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         options.prop(self, "import_hierarchy")
         row = options.row()
         row.enabled = self.import_hierarchy
+        row.prop(self, "import_full_hierarchy")
         row.prop(self, "create_bounds")
         options.prop(self, "auto_join")
         row = options.row()
@@ -619,6 +654,7 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
                             create_bounds=self.create_bounds, auto_join=self.auto_join,
                             threshold=self.threshold, import_materials=self.import_materials,
                             import_textures=self.import_textures, import_joined_mesh=self.import_joined_mesh,
+                            import_full_hierarchy=self.import_full_hierarchy,
                         )
                         try:
                             importer.run(sdk.value("SUModelGetEntities", model), collection.name)
