@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 16),
+    "version": (0, 2, 17),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -271,6 +271,8 @@ class Importer:
         self.meshes = []
         self.component_meshes = {}
         self.mesh_part_counts = {}
+        self.child_cache = {}
+        self.component_counts = {}
         self.images = []
         self.new_materials = []
 
@@ -421,6 +423,11 @@ class Importer:
                                         for _, normal, texcoord in polygon)
 
     def children(self, entities):
+        if entities.ptr not in self.child_cache:
+            self.child_cache[entities.ptr] = tuple(self.read_children(entities))
+        return self.child_cache[entities.ptr]
+
+    def read_children(self, entities):
         sdk = self.sdk
         for group in sdk.items("SUEntities", "Groups", entities):
             yield (sdk.string("SUGroupGetName", group) or "Group",
@@ -540,6 +547,8 @@ class Importer:
             self.component_meshes[key] = (
                 self.mesh_from_geometry(name, geometry) if geometry.faces or geometry.edges else None
             )
+        elif join and self.progress and self.progress.visible:
+            self.progress.component_done(self.component_counts[entities.ptr])
         mesh = self.component_meshes[key]
         obj = None
         if mesh is not None or self.import_hierarchy:
@@ -618,6 +627,18 @@ class Importer:
         return box
 
     def run(self, entities, model_name="Model Geometry"):
+        if self.progress and self.progress.visible:
+            self.progress.show("Counting SketchUp components…")
+            counts = self.component_counts
+
+            def count_components(parent):
+                if parent.ptr not in counts:
+                    counts[parent.ptr] = sum(1 + count_components(child)
+                                             for _, child, _, _ in self.children(parent))
+                return counts[parent.ptr]
+
+            self.progress.total = count_components(entities)
+            self.progress.show("Importing SketchUp…")
         geometry = Geometry()
         if self.import_joined_mesh:
             self.collect(geometry, entities, IDENTITY, None, self.children(entities))
@@ -678,25 +699,34 @@ class Importer:
 
 class ImportProgress:
     def __init__(self, context):
-        self.workspace = context.workspace
-        self.window_manager = context.window_manager
-        self.visible = not bpy.app.background and context.window is not None and self.workspace is not None
+        self.window = context.window
+        self.visible = not bpy.app.background and self.window is not None
         self.components = 0
+        self.total = None
+        self.finished = False
+        self.label = ""
         self.next_update = 0.0
         self.redraw = self.visible
+        self.callback = self.draw
 
     def begin(self):
         if self.visible:
-            self.window_manager.progress_begin(0, 3)
-            self.stage(0, "Opening SketchUp file…")
+            bpy.types.STATUSBAR_HT_header.append(self.callback)
+            self.show("Opening SketchUp file…")
 
-    def stage(self, step, label):
-        if self.visible:
-            self.window_manager.progress_update(step)
-            self.show(label)
+    def draw(self, header, context):
+        if context.window != self.window:
+            return
+        row = header.layout.row(align=True)
+        if self.total is None:
+            row.label(text=self.label)
+            return
+        factor = 1.0 if self.finished else min(self.components / max(self.total, 1), 0.99)
+        row.ui_units_x = 12
+        row.progress(factor=factor, type="BAR", text=f"SketchUp Import {factor:.0%}")
 
     def show(self, label):
-        self.workspace.status_text_set(label)
+        self.label = label
         self.next_update = monotonic() + 0.25
         # The import runs synchronously, so refresh the window between batches.
         if self.redraw:
@@ -705,17 +735,14 @@ class ImportProgress:
             except RuntimeError:
                 self.redraw = False
 
-    def component_done(self):
-        self.components += 1
+    def component_done(self, count=1):
+        self.components += count
         if self.visible and monotonic() >= self.next_update:
-            self.show(f"Importing SketchUp geometry and materials… {self.components:,} components processed")
+            self.show("Importing SketchUp…")
 
     def end(self):
         if self.visible:
-            try:
-                self.workspace.status_text_set(None)
-            finally:
-                self.window_manager.progress_end()
+            bpy.types.STATUSBAR_HT_header.remove(self.callback)
 
 
 class ImportSKP(bpy.types.Operator, ImportHelper):
@@ -810,7 +837,6 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
                 sdk.call("SUModelCreateFromFileWithStatus", C.pointer(model),
                          C.c_char_p(self.filepath.encode("utf-8")), C.pointer(status))
                 try:
-                    progress.stage(1, "Importing SketchUp geometry and materials…")
                     if status.value:
                         self.report({"WARNING"}, "This file is newer than the installed SketchUp SDK. Some data may be missing.")
                     collection = bpy.data.collections.new(Path(self.filepath).stem)
@@ -826,7 +852,8 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
                         )
                         try:
                             importer.run(sdk.value("SUModelGetEntities", model), collection.name)
-                            progress.stage(2, f"Finishing SketchUp import… {progress.components:,} components processed")
+                            progress.finished = True
+                            progress.show("Finishing SketchUp import…")
                         except Exception:
                             importer.rollback()
                             bpy.data.collections.remove(collection)
