@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 2),
+    "version": (0, 2, 3),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -201,11 +201,12 @@ class Geometry:
 
 class Importer:
     def __init__(self, sdk, collection, directory, *, import_hierarchy, create_bounds,
-                 auto_join, threshold, import_materials, import_textures):
+                 auto_join, threshold, import_materials, import_textures, import_joined_mesh=False):
         self.sdk = sdk
         self.collection = collection
         self.directory = Path(directory)
         self.import_hierarchy = import_hierarchy
+        self.import_joined_mesh = import_joined_mesh
         self.auto_join = auto_join
         self.import_materials = import_materials
         self.import_textures = import_materials and import_textures
@@ -509,8 +510,13 @@ class Importer:
             root.parent = box
             root.matrix_parent_inverse = box_inverse
 
-    def run(self, entities):
+    def run(self, entities, model_name="Model Geometry"):
         geometry = Geometry()
+        if self.import_joined_mesh:
+            self.collect(geometry, entities, IDENTITY, None, self.children(entities))
+            mesh = self.mesh_from_geometry(model_name, geometry)
+            self.create_object(model_name, mesh, None, IDENTITY)
+            return
         self.append_entities(geometry, entities, IDENTITY, None)
         if geometry.faces or geometry.edges:
             mesh = self.mesh_from_geometry("Model Geometry", geometry)
@@ -535,21 +541,55 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
 
     filename_ext = ".skp"
     filter_glob: StringProperty(default="*.skp", options={"HIDDEN"})
-    import_hierarchy: BoolProperty(name="Import Hierarchy", default=True)
-    create_bounds: BoolProperty(name="Create Bounding Boxes", default=True)
-    auto_join: BoolProperty(name="Auto Join", default=True)
-    threshold: IntProperty(name="Join Threshold", default=5, min=1)
-    import_materials: BoolProperty(name="Import Materials", default=True)
-    import_textures: BoolProperty(name="Import Textures", default=True)
+    import_joined_mesh: BoolProperty(
+        name="Import Joined Mesh",
+        description="Combine the entire SketchUp model into one mesh object",
+        default=False,
+    )
+    import_hierarchy: BoolProperty(
+        name="Import Hierarchy",
+        description="Preserve parent-child relationships between components",
+        default=True,
+    )
+    create_bounds: BoolProperty(
+        name="Create Bounding Boxes",
+        description="Create selectable bounding boxes for top-level assemblies with children",
+        default=True,
+    )
+    auto_join: BoolProperty(
+        name="Auto Join",
+        description="Combine a component and its descendants when its direct child count reaches the threshold",
+        default=True,
+    )
+    threshold: IntProperty(
+        name="Join Threshold",
+        description="Minimum number of direct children needed to join a component and its descendants",
+        default=5,
+        min=1,
+    )
+    import_materials: BoolProperty(
+        name="Import Materials",
+        description="Create and assign materials from the SketchUp model",
+        default=True,
+    )
+    import_textures: BoolProperty(
+        name="Import Textures",
+        description="Import image textures and pack them into the Blender file",
+        default=True,
+    )
 
     def draw(self, context):
-        self.layout.prop(self, "import_hierarchy")
-        row = self.layout.row()
+        self.layout.prop(self, "import_joined_mesh")
+        options = self.layout.column()
+        options.enabled = not self.import_joined_mesh
+        options.prop(self, "import_hierarchy")
+        row = options.row()
         row.enabled = self.import_hierarchy
         row.prop(self, "create_bounds")
-        self.layout.prop(self, "auto_join")
-        if self.auto_join:
-            self.layout.prop(self, "threshold")
+        options.prop(self, "auto_join")
+        row = options.row()
+        row.enabled = self.auto_join
+        row.prop(self, "threshold")
         self.layout.prop(self, "import_materials")
         row = self.layout.row()
         row.enabled = self.import_materials
@@ -578,10 +618,10 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
                             sdk, collection, directory, import_hierarchy=self.import_hierarchy,
                             create_bounds=self.create_bounds, auto_join=self.auto_join,
                             threshold=self.threshold, import_materials=self.import_materials,
-                            import_textures=self.import_textures,
+                            import_textures=self.import_textures, import_joined_mesh=self.import_joined_mesh,
                         )
                         try:
-                            importer.run(sdk.value("SUModelGetEntities", model))
+                            importer.run(sdk.value("SUModelGetEntities", model), collection.name)
                         except Exception:
                             importer.rollback()
                             bpy.data.collections.remove(collection)
