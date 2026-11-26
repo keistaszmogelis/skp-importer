@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 19),
+    "version": (0, 2, 20),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -704,10 +704,10 @@ class Importer:
 class ImportProgress:
     active = None
 
-    def __init__(self, context):
+    def __init__(self, context, enabled=True):
         self.window = context.window
         self.workspace = context.workspace
-        self.visible = not bpy.app.background and self.window is not None and self.workspace is not None
+        self.visible = enabled and not bpy.app.background and self.window is not None and self.workspace is not None
         self.components = 0
         self.total = None
         self.cancelled = False
@@ -832,6 +832,12 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         precision=3,
     )
 
+    show_progress: BoolProperty(
+        name="Show Progress",
+        description="Show import progress and allow cancellation. Counting components and updating the display may slow down the import",
+        default=True,
+    )
+
     def draw(self, context):
         self.layout.prop(self, "import_joined_mesh")
         options = self.layout.column()
@@ -853,12 +859,13 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         row = self.layout.row()
         row.enabled = self.import_materials
         row.prop(self, "import_textures")
+        self.layout.prop(self, "show_progress")
 
     def execute(self, context):
         if ImportProgress.active is not None:
             self.report({"WARNING"}, "A SketchUp import is already running.")
             return {"CANCELLED"}
-        self.progress = ImportProgress(context)
+        self.progress = ImportProgress(context, enabled=self.show_progress)
         self.steps = self.import_steps(context.collection, self.progress)
         self.timer = None
         try:
