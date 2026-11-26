@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 1),
+    "version": (0, 2, 2),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -496,8 +496,18 @@ class Importer:
         name = f"{root.name} Bounds"
         mesh = self.mesh_from_geometry(name, geometry)
         box = self.create_object(name, mesh, None, Matrix.Translation(center))
-        root.parent = box
-        root.matrix_parent_inverse = Matrix.Translation(-center)
+        box_inverse = Matrix.Translation(-center)
+        if root.type == "EMPTY":
+            for child in objects[1:]:
+                if child.parent == root:
+                    parent_inverse = box_inverse @ root.matrix_basis @ child.matrix_parent_inverse
+                    child.parent = box
+                    child.matrix_parent_inverse = parent_inverse
+            self.objects.remove(root)
+            bpy.data.objects.remove(root, do_unlink=True)
+        else:
+            root.parent = box
+            root.matrix_parent_inverse = box_inverse
 
     def run(self, entities):
         geometry = Geometry()
