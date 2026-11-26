@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 15),
+    "version": (0, 2, 16),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -10,6 +10,7 @@ bl_info = {
 
 import ctypes as C
 import os
+import re
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -193,6 +194,50 @@ def polygon_boundary(edges):
     return None
 
 
+def glass_shaders(material, rgba):
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    eevee = nodes.get("Principled BSDF")
+    cycles = nodes.new("ShaderNodeBsdfPrincipled")
+    eevee.label = "Eevee Glass"
+    cycles.label = "Cycles Glass"
+    eevee.location = (0, 400)
+    cycles.location = (0, 0)
+    for shader in (eevee, cycles):
+        shader.inputs["Base Color"].default_value = (*rgba[:3], 1.0)
+        shader.inputs["Transmission Weight"].default_value = 1.0
+        shader.inputs["Roughness"].default_value = 0.0
+    eevee.inputs["Alpha"].default_value = rgba[3]
+    cycles.inputs["Alpha"].default_value = 1.0
+
+    eevee_output = nodes.get("Material Output")
+    eevee_output.target = "EEVEE"
+    eevee_output.location = (660, 400)
+    cycles_output = nodes.new("ShaderNodeOutputMaterial")
+    cycles_output.target = "CYCLES"
+    cycles_output.location = (660, 0)
+    eevee_output.is_active_output = True
+    cycles_output.is_active_output = True
+
+    light_path = nodes.new("ShaderNodeLightPath")
+    light_path.location = (-320, -120)
+    either_ray = nodes.new("ShaderNodeMath")
+    either_ray.operation = "MAXIMUM"
+    either_ray.label = "Camera or Transmission"
+    either_ray.location = (0, -670)
+    transparent = nodes.new("ShaderNodeBsdfTransparent")
+    transparent.location = (260, -300)
+    mix = nodes.new("ShaderNodeMixShader")
+    mix.location = (460, 0)
+    links.new(light_path.outputs["Is Camera Ray"], either_ray.inputs[0])
+    links.new(light_path.outputs["Is Transmission Ray"], either_ray.inputs[1])
+    links.new(either_ray.outputs[0], mix.inputs[0])
+    links.new(transparent.outputs[0], mix.inputs[1])
+    links.new(cycles.outputs[0], mix.inputs[2])
+    links.new(mix.outputs[0], cycles_output.inputs["Surface"])
+    return eevee, cycles
+
+
 class Geometry:
     def __init__(self):
         self.vertices = []
@@ -235,7 +280,8 @@ class Importer:
         sdk = self.sdk
         if ref.ptr in self.materials:
             return self.materials[ref.ptr]
-        material = bpy.data.materials.new(sdk.string("SUMaterialGetName", ref) or "SketchUp Material")
+        name = sdk.string("SUMaterialGetName", ref) or "SketchUp Material"
+        material = bpy.data.materials.new(name)
         self.new_materials.append(material)
         material.use_nodes = True
         nodes = material.node_tree.nodes
@@ -246,6 +292,9 @@ class Importer:
         material.diffuse_color = rgba
         shader.inputs["Base Color"].default_value = rgba
         shader.inputs["Alpha"].default_value = opacity
+        shaders = (shader,)
+        if re.search(r"\bglass\b", name.replace("_", " "), re.IGNORECASE):
+            shaders = glass_shaders(material, rgba)
         texture = sdk.value("SUMaterialGetTexture", ref, optional=True) if self.import_textures else None
         if texture:
             width, height = C.c_size_t(), C.c_size_t()
@@ -266,7 +315,8 @@ class Importer:
             node = nodes.new("ShaderNodeTexImage")
             node.image = image
             node.location = (-320, 300)
-            material.node_tree.links.new(node.outputs["Color"], shader.inputs["Base Color"])
+            for shader in shaders:
+                material.node_tree.links.new(node.outputs["Color"], shader.inputs["Base Color"])
         self.materials[ref.ptr] = material
         return material
 
