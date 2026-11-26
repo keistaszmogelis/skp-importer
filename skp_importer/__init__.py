@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 11),
+    "version": (0, 2, 12),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -203,13 +203,13 @@ class Geometry:
 
 
 class Importer:
-    def __init__(self, sdk, collection, directory, *, import_hierarchy, create_bounds,
+    def __init__(self, sdk, collection, directory, *, create_bounds,
                  auto_join, threshold, import_materials, import_textures, import_joined_mesh=False,
                  hierarchy_levels=1, axes_size=0.2):
         self.sdk = sdk
         self.collection = collection
         self.directory = Path(directory)
-        self.import_hierarchy = import_hierarchy
+        self.import_hierarchy = hierarchy_levels > 0
         self.hierarchy_levels = hierarchy_levels
         self.axes_size = axes_size
         self.import_joined_mesh = import_joined_mesh
@@ -217,7 +217,7 @@ class Importer:
         self.import_materials = import_materials
         self.import_textures = import_materials and import_textures
         self.threshold = threshold
-        self.create_bounds = import_hierarchy and create_bounds
+        self.create_bounds = self.import_hierarchy and create_bounds
         self.materials = {}
         self.texture_scales = {}
         self.objects = []
@@ -629,16 +629,11 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         description="Combine the entire SketchUp model into one mesh object",
         default=False,
     )
-    import_hierarchy: BoolProperty(
-        name="Hierarchy",
-        description="Parent mesh parts under their top-level assembly up to the selected depth",
-        default=True,
-    )
     hierarchy_levels: IntProperty(
         name="Hierarchy Levels",
-        description="Maximum nesting depth below the top-level object. A value of 1 makes all parts direct children",
+        description="Maximum nesting depth. 0 imports unparented meshes. 1 makes parts direct children",
         default=1,
-        min=1,
+        min=0,
     )
     create_bounds: BoolProperty(
         name="Create Bounding Boxes",
@@ -680,16 +675,13 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
         self.layout.prop(self, "import_joined_mesh")
         options = self.layout.column()
         options.enabled = not self.import_joined_mesh
-        options.prop(self, "import_hierarchy")
-        row = options.row()
-        row.enabled = self.import_hierarchy
-        row.prop(self, "hierarchy_levels")
+        options.prop(self, "hierarchy_levels")
         options.prop(self, "auto_join")
         row = options.row()
         row.enabled = self.auto_join
         row.prop(self, "threshold")
         row = options.row()
-        row.enabled = self.import_hierarchy
+        row.enabled = self.hierarchy_levels > 0
         row.prop(self, "create_bounds")
         row = options.row()
         row.enabled = self.import_hierarchy and not self.create_bounds
@@ -719,7 +711,7 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
                     context.collection.children.link(collection)
                     with TemporaryDirectory(prefix="blender-skp-") as directory:
                         importer = Importer(
-                            sdk, collection, directory, import_hierarchy=self.import_hierarchy,
+                            sdk, collection, directory,
                             create_bounds=self.create_bounds, auto_join=self.auto_join,
                             threshold=self.threshold, import_materials=self.import_materials,
                             import_textures=self.import_textures, import_joined_mesh=self.import_joined_mesh,
