@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 8),
+    "version": (0, 2, 9),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -95,13 +95,16 @@ class SDK:
         count = self.value(f"{prefix}GetNum{suffix}", ref, C.c_size_t)
         return self.array(f"{prefix}Get{suffix}", ref, count.value)
 
-    def entity_edges(self, entities):
+    def entity_edge_count(self, entities):
         # False includes loose edges, curves, and edges belonging to faces.
         standalone_only = C.c_bool(False)
         count = C.c_size_t()
         self.call("SUEntitiesGetNumEdges", entities, standalone_only, C.pointer(count))
-        return self.array("SUEntitiesGetEdges", entities, count.value,
-                          query_args=(standalone_only,))
+        return count.value
+
+    def entity_edges(self, entities):
+        return self.array("SUEntitiesGetEdges", entities, self.entity_edge_count(entities),
+                          query_args=(C.c_bool(False),))
 
     def string(self, name, ref):
         string = Ref()
@@ -220,6 +223,7 @@ class Importer:
         self.objects = []
         self.meshes = []
         self.component_meshes = {}
+        self.mesh_part_counts = {}
         self.images = []
         self.new_materials = []
 
@@ -428,6 +432,18 @@ class Importer:
             self.collect(geometry, child_entities, transform @ child_matrix,
                          material or inherited, self.children(child_entities))
 
+    def count_mesh_parts(self, entities):
+        if entities.ptr not in self.mesh_part_counts:
+            sdk = self.sdk
+            count = int(bool(sdk.value("SUEntitiesGetNumFaces", entities, C.c_size_t).value
+                             or sdk.entity_edge_count(entities)))
+            for _, child_entities, _, _ in self.children(entities):
+                count += self.count_mesh_parts(child_entities)
+                if count >= self.threshold:
+                    break
+            self.mesh_part_counts[entities.ptr] = count
+        return self.mesh_part_counts[entities.ptr]
+
     def component(self, name, entities, transform, inherited, parent):
         start = len(self.objects)
         children = list(self.children(entities))
@@ -439,7 +455,17 @@ class Importer:
                for column, value in enumerate(values)):
             residual = IDENTITY
 
-        join = self.auto_join and len(children) >= self.threshold
+        join = False
+        if self.auto_join:
+            if self.import_hierarchy and not self.import_full_hierarchy:
+                count = 0
+                for _, child_entities, _, _ in children:
+                    count += self.count_mesh_parts(child_entities)
+                    if count >= self.threshold:
+                        join = True
+                        break
+            else:
+                join = len(children) >= self.threshold
         key = (entities.ptr, inherited.ptr if inherited else None, join,
                tuple(tuple(row) for row in residual))
         if key not in self.component_meshes:
@@ -598,12 +624,12 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
     )
     auto_join: BoolProperty(
         name="Auto Join",
-        description="Combine a component and its descendants when its direct child count reaches the threshold",
+        description="Combine a component and its descendants when its child count reaches the threshold",
         default=True,
     )
     threshold: IntProperty(
         name="Join Threshold",
-        description="Minimum number of direct children needed to join a component and its descendants",
+        description="Minimum child count for joining. Flat hierarchies count mesh parts at every nested level",
         default=5,
         min=1,
     )
