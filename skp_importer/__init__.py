@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 6),
+    "version": (0, 2, 7),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -468,7 +468,8 @@ class Importer:
                 self.component(child_name, child_entities, child_transform,
                                material or inherited, child_parent)
         if self.create_bounds and obj is not None and (
-            obj.type == "EMPTY" or (parent is None and len(self.objects) > start + 1)
+            (obj.type == "EMPTY" and (parent is None or self.import_full_hierarchy))
+            or (parent is None and len(self.objects) > start + 1)
         ):
             obj = self.add_assembly_bounds(obj, self.objects[start:])
         return obj
@@ -542,8 +543,7 @@ class Importer:
             if self.import_hierarchy and not self.import_full_hierarchy:
                 self.flatten_assembly(root, self.objects[start:])
 
-    @staticmethod
-    def flatten_assembly(root, objects):
+    def flatten_assembly(self, root, objects):
         # Capture transforms before changing any parent links.
         relative = {root: IDENTITY}
 
@@ -552,11 +552,15 @@ class Importer:
                 relative[obj] = relative_matrix(obj.parent) @ obj.matrix_parent_inverse @ obj.matrix_basis
             return relative[obj]
 
+        intermediate_empties = {obj for obj in objects if self.create_bounds and obj != root and obj.type == "EMPTY"}
         changes = [(obj, relative_matrix(obj.parent) @ obj.matrix_parent_inverse)
-                   for obj in objects if obj != root and obj.parent != root]
+                   for obj in objects if obj != root and obj.parent != root and obj not in intermediate_empties]
         for obj, parent_inverse in changes:
             obj.parent = root
             obj.matrix_parent_inverse = parent_inverse
+        for obj in intermediate_empties:
+            self.objects.remove(obj)
+            bpy.data.objects.remove(obj, do_unlink=True)
 
     def rollback(self):
         for datablocks, items in ((bpy.data.objects, self.objects), (bpy.data.meshes, self.meshes),
