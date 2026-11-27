@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "Import Sketchup .skp format",
-    "version": (0, 2, 26),
+    "version": (1, 0, 0),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -337,7 +337,7 @@ class Importer:
         material.diffuse_color = rgba
         shader.inputs["Base Color"].default_value = rgba
         shader.inputs["Alpha"].default_value = opacity
-        if re.search(r"\bglass\b", name.replace("_", " "), re.IGNORECASE):
+        if opacity < 0.6 or re.search(r"\bglass\b", name.replace("_", " "), re.IGNORECASE):
             if self.glass_group is None:
                 self.glass_group = make_glass_group()
             shader = glass_shader(material, self.glass_group, rgba)
