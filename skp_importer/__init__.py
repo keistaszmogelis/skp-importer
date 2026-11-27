@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 23),
+    "version": (0, 2, 24),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -398,7 +398,7 @@ class Importer:
                     if (b - a).cross(c - a).dot(Vector(normal)) < 0:
                         triangle.reverse()
                     triangles.append(triangle)
-                rings = triangles if hole_count > 5 else merge_face_triangles(triangles)
+                rings = triangles if hole_count >= 12 else merge_face_triangles(triangles)
                 polygons = [[points[index] for index in ring] for ring in rings]
             else:
                 outer = sdk.value("SUFaceGetOuterLoop", face)
