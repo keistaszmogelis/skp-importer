@@ -1,8 +1,8 @@
 """Import SketchUp files through Trimble's standalone desktop SDK."""
 
 bl_info = {
-    "name": "SketchUp (.skp)",
-    "version": (0, 2, 25),
+    "name": "Import Sketchup .skp format",
+    "version": (0, 2, 26),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
