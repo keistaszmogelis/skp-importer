@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "SketchUp (.skp)",
-    "version": (0, 2, 24),
+    "version": (0, 2, 25),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -285,7 +285,7 @@ class Geometry:
         self.vertices = []
         self.edges = set()
         self.faces = []
-        self.corners = []
+        self.uvs = []
         self.materials = []
         self.sharp = set()
 
@@ -378,7 +378,6 @@ class Importer:
         try:
             size = sdk.value("SUMeshHelperGetNumVertices", helper, C.c_size_t).value
             points = sdk.array("SUMeshHelperGetVertices", helper, size, Point)
-            normals = sdk.array("SUMeshHelperGetNormals", helper, size, Point)
             coords = []
             if texture_scale:
                 side = "Back" if reverse else "Front"
@@ -409,14 +408,12 @@ class Importer:
                 data = []
                 for point in polygon:
                     index = lookup.get(point.tuple())
-                    point_normal = normals[index].tuple() if index is not None and index < len(normals) else normal
                     texcoord = uv(coords[index]) if index is not None and index < len(coords) else (0.0, 0.0)
                     if texture_scale and front is None and back is None:
                         texcoord = tuple(value * scale for value, scale in zip(texcoord, texture_scale))
-                    data.append((point, point_normal, texcoord))
+                    data.append((point, texcoord))
                 if reverse:
-                    data = [(point, tuple(-v for v in normal), texcoord)
-                            for point, normal, texcoord in reversed(data)]
+                    data.reverse()
                 corners.append(data)
             return material, corners
         finally:
@@ -425,7 +422,6 @@ class Importer:
     def append_entities(self, geometry, entities, transform, inherited):
         sdk = self.sdk
         vertices = {}
-        normal_matrix = transform.to_3x3().inverted_safe().transposed()
         mirrored = transform.to_3x3().determinant() < 0
 
         def vertex_index(point):
@@ -458,13 +454,12 @@ class Importer:
             for polygon in polygons:
                 if mirrored:
                     polygon.reverse()
-                indices = [vertex_index(point) for point, _, _ in polygon]
+                indices = [vertex_index(point) for point, _ in polygon]
                 if len(set(indices)) != len(indices) or len(indices) < 3:
                     continue
                 geometry.faces.append(indices)
                 geometry.materials.append((material, smooth))
-                geometry.corners.extend((normal_matrix @ Vector(normal), texcoord)
-                                        for _, normal, texcoord in polygon)
+                geometry.uvs.extend(texcoord for _, texcoord in polygon)
 
     def children(self, entities):
         if entities.ptr not in self.child_cache:
@@ -506,7 +501,7 @@ class Importer:
         slots = {}
         if geometry.faces:
             layer = mesh.uv_layers.new(name="UVMap")
-            layer.uv.foreach_set("vector", [v for _, pair in geometry.corners for v in pair])
+            layer.uv.foreach_set("vector", [v for pair in geometry.uvs for v in pair])
         for polygon, (material, smooth) in zip(mesh.polygons, geometry.materials):
             polygon.use_smooth = smooth
             if not self.import_materials:
@@ -517,8 +512,6 @@ class Importer:
             polygon.material_index = slots[material]
         for edge in mesh.edges:
             edge.use_edge_sharp = tuple(sorted(edge.vertices)) in geometry.sharp
-        if geometry.corners:
-            mesh.normals_split_custom_set([normal.normalized() for normal, _ in geometry.corners])
         return mesh
 
     def create_object(self, name, mesh, parent, transform):
