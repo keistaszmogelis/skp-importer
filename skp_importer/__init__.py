@@ -2,7 +2,7 @@
 
 bl_info = {
     "name": "Import Sketchup .skp format",
-    "version": (1, 0, 1),
+    "version": (1, 0, 2),
     "blender": (4, 2, 0),
     "location": "File > Import",
     "category": "Import-Export",
@@ -564,7 +564,11 @@ class Importer:
             residual = IDENTITY
 
         join = False
-        if self.auto_join and depth == self.hierarchy_levels - 1:
+        if self.auto_join and children and (
+            depth == self.hierarchy_levels - 1
+            or (depth < self.hierarchy_levels - 1
+                and all(not self.children(child) for _, child, _, _ in children))
+        ):
             count = 0
             for _, child_entities, _, _ in children:
                 count += self.count_mesh_parts(child_entities)
@@ -840,12 +844,12 @@ class ImportSKP(bpy.types.Operator, ImportHelper):
     )
     auto_join: BoolProperty(
         name="Auto Join",
-        description="Combine matching groups only at the selected hierarchy level",
+        description="Join groups at the selected hierarchy level or where a branch ends sooner",
         default=True,
     )
     threshold: IntProperty(
         name="Join Threshold",
-        description="Minimum number of nested mesh parts needed to join at the selected hierarchy level",
+        description="Minimum number of nested mesh parts needed to join an eligible group",
         default=5,
         min=1,
     )
